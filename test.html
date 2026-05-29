@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>역학에너지 보존 시뮬레이션 - 최종본</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: '맑은 고딕', sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #f4f4f9; margin: 0; padding: 20px; }
+        h1 { color: #333; margin-bottom: 10px; }
+        .controls { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; width: 800px; max-width: 95%; }
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        .control-group label { font-weight: bold; font-size: 13px; color: #333; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        input[type="number"] { padding: 5px; border: 1px solid #ccc; border-radius: 4px; text-align: center; }
+        .btn-container { grid-column: span 3; display: flex; justify-content: center; margin-top: 10px; }
+        button { padding: 12px 30px; background-color: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 16px; transition: background 0.2s; }
+        button:hover { background-color: #0056b3; }
+        .canvas-container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
+        canvas { background: #fff; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .info-panel { margin-top: 20px; font-size: 18px; font-weight: bold; color: #444; background: #e3f2fd; padding: 15px 30px; border-radius: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+
+    <h1>역학에너지 보존 법칙 시뮬레이션</h1>
+    
+    <div class="controls">
+        <div class="control-group">
+            <label>초기 가로 위치 (x: m)</label>
+            <input type="range" id="rangeX" min="0" max="150" value="10" oninput="syncValue('X')">
+            <input type="number" id="inputX" value="10" oninput="syncValue('X')">
+        </div>
+        <div class="control-group">
+            <label>초기 높이 (y: m)</label>
+            <input type="range" id="rangeY" min="0" max="120" value="80" oninput="syncValue('Y')">
+            <input type="number" id="inputY" value="80" oninput="syncValue('Y')">
+        </div>
+        <div class="control-group">
+            <label>초기 속력 (v: m/s)</label>
+            <input type="number" id="inputV" value="30" oninput="preview()">
+        </div>
+        <div class="control-group">
+            <label>발사 각도 (θ: 도)</label>
+            <input type="range" id="rangeAngle" min="0" max="90" value="45" oninput="syncValue('Angle')">
+            <input type="number" id="inputAngle" value="45" oninput="syncValue('Angle')">
+        </div>
+        <div class="control-group">
+            <label>질량 (m: kg)</label>
+            <input type="number" id="inputMass" value="2" oninput="preview()">
+        </div>
+        <div class="btn-container">
+            <button onclick="startSimulation()">시뮬레이션 발사!</button>
+        </div>
+    </div>
+
+    <div class="canvas-container">
+        <canvas id="simCanvas" width="600" height="450"></canvas>
+        <canvas id="chartCanvas" width="500" height="450"></canvas>
+    </div>
+    
+    <div class="info-panel" id="infoPanel">위치를 설정하고 발사 버튼을 눌러주세요.</div>
+
+    <script>
+        const simCanvas = document.getElementById('simCanvas');
+        const ctx = simCanvas.getContext('2d');
+        const chartCtx = document.getElementById('chartCanvas').getContext('2d');
+        const infoPanel = document.getElementById('infoPanel');
+
+        // 물리 및 애니메이션 변수
+        let animationId;
+        let isRunning = false;
+        let time = 0;
+        let frameCount = 0; // 매끄러운 그래프를 위한 프레임 카운터
+        const dt = 0.016; // 시간 변화량 (약 60fps)
+        const g = 9.8;    // 중력가속도
+        const scale = 3.5; // 캔버스 픽셀 변환 비율 (1m = 3.5px)
+
+        let ball = { x: 0, y: 0, vx: 0, vy: 0, mass: 2 };
+        
+        // 그래프 데이터 변수
+        let chart;
+        let timeData = [], keData = [], peData = [], teData = [];
+
+        // 슬라이더와 숫자 입력창 동기화
+        function syncValue(type) {
+            const range = document.getElementById(`range${type}`);
+            const input = document.getElementById(`input${type}`);
+            
+            if (event.target.type === 'range') {
+                input.value = range.value;
+            } else {
+                range.value = input.value;
+            }
+            preview();
+        }
+
+        // Chart.js 그래프 초기화
+        function initChart() {
+            if (chart) chart.destroy();
+            chart = new Chart(chartCtx, {
+                type: 'line',
+                data: {
+                    labels: timeData,
+                    datasets: [
+                        { label: '운동에너지 (K)', data: keData, borderColor: '#ff6384', fill: false, pointRadius: 0, tension: 0.1 },
+                        { label: '퍼텐셜에너지 (U)', data: peData, borderColor: '#36a2eb', fill: false, pointRadius: 0, tension: 0.1 },
+                        { label: '역학에너지 (E)', data: teData, borderColor: '#4bc0c0', fill: false, pointRadius: 0, borderWidth: 3, tension: 0.1 }
+                    ]
+                },
+                options: {
+                    responsive: false,
+                    animation: false,
+                    scales: {
+                        x: { title: { display: true, text: '시간 (s)' } },
+                        y: { title: { display: true, text: '에너지 (J)' }, beginAtZero: true }
+                    }
+                }
+            });
+        }
+
+        // 발사 전 미리보기 화면 그리기
+        function preview() {
+            if (isRunning) return;
+            
+            const x = parseFloat(document.getElementById('inputX').value);
+            const y = parseFloat(document.getElementById('inputY').value);
+            const angle = parseFloat(document.getElementById('inputAngle').value) * Math.PI / 180;
+            const v = parseFloat(document.getElementById('inputV').value);
+
+            ball.x = x;
+            ball.y = y;
+            ball.vx = v * Math.cos(angle);
+            ball.vy = v * Math.sin(angle);
+
+            drawSimulation();
+            
+            // 발사 예상 궤적 가이드라인 (점선)
+            const groundY = simCanvas.height - 20;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(ball.x * scale, groundY - (ball.y * scale));
+            ctx.lineTo((ball.x + ball.vx * 0.5) * scale, groundY - ((ball.y + ball.vy * 0.5) * scale));
+            ctx.strokeStyle = '#999';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // 화면 렌더링 함수
+        function drawSimulation() {
+            ctx.clearRect(0, 0, simCanvas.width, simCanvas.height);
+            const groundY = simCanvas.height - 20;
+
+            // 하늘 배경
+            ctx.fillStyle = '#f0faff';
+            ctx.fillRect(0, 0, simCanvas.width, groundY);
+            
+            // 땅바닥
+            ctx.fillStyle = '#795548';
+            ctx.fillRect(0, groundY, simCanvas.width, 20);
+
+            // 공 그리기
+            const drawX = ball.x * scale;
+            const drawY = groundY - (ball.y * scale);
+
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, 12, 0, Math.PI * 2);
+            ctx.fillStyle = '#e91e63';
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        // 시뮬레이션 시작
+        function startSimulation() {
+            cancelAnimationFrame(animationId);
+            
+            isRunning = true;
+            time = 0;
+            frameCount = 0; // 프레임 초기화
+            timeData.length = 0; keData.length = 0; peData.length = 0; teData.length = 0;
+            
+            ball.mass = parseFloat(document.getElementById('inputMass').value);
+            
+            // 시작 전 미리보기 상태를 초기값으로 확정
+            const x = parseFloat(document.getElementById('inputX').value);
+            const y = parseFloat(document.getElementById('inputY').value);
+            const angle = parseFloat(document.getElementById('inputAngle').value) * Math.PI / 180;
+            const v = parseFloat(document.getElementById('inputV').value);
+            
+            ball.x = x;
+            ball.y = y;
+            ball.vx = v * Math.cos(angle);
+            ball.vy = v * Math.sin(angle);
+
+            initChart();
+            animate();
+        }
+
+        // 메인 물리 루프
+        function animate() {
+            if (!isRunning) return;
+
+            // 1. 물리 엔진 (F = ma)
+            ball.vy -= g * dt; // 중력 적용
+            ball.x += ball.vx * dt; // x축 이동
+            ball.y += ball.vy * dt; // y축 이동
+            time += dt;
+            frameCount++;
+
+            // 2. 에너지 계산 (E = K + U)
+            const v_sq = ball.vx**2 + ball.vy**2;
+            const ke = 0.5 * ball.mass * v_sq;
+            const pe = ball.mass * g * Math.max(0, ball.y);
+            const te = ke + pe;
+
+            // 3. 그래프 데이터 업데이트 (소수점 절사 없이 원본 값 사용)
+            if (frameCount % 5 === 0) {
+                timeData.push(time.toFixed(2)); // x축 시간만 반올림
+                keData.push(ke); // y축 에너지는 정밀한 값 그대로 입력
+                peData.push(pe);
+                teData.push(te);
+                chart.update();
+            }
+
+            infoPanel.innerText = `현재 역학에너지(E): ${te.toFixed(1)} J (K: ${ke.toFixed(1)} J + U: ${pe.toFixed(1)} J)`;
+
+            drawSimulation();
+
+            // 4. 바닥 충돌 및 종료 조건
+            if (ball.y <= 0) {
+                ball.y = 0;
+                drawSimulation();
+                isRunning = false;
+                
+                // 마지막 지점 데이터 확실히 기록
+                timeData.push(time.toFixed(2));
+                keData.push(te); // 바닥에서는 모두 운동에너지
+                peData.push(0);
+                teData.push(te);
+                chart.update();
+
+                infoPanel.innerText = `운동 종료! 역학에너지가 ${te.toFixed(1)} J로 보존됨을 확인했습니다.`;
+                return;
+            }
+
+            // 화면 오른쪽으로 나가면 종료
+            if (ball.x * scale > simCanvas.width) {
+                isRunning = false;
+                return;
+            }
+
+            animationId = requestAnimationFrame(animate);
+        }
+
+        // 페이지 로드 시 초기 화면 렌더링
+        preview();
+    </script>
+</body>
+</html>
